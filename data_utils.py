@@ -207,6 +207,39 @@ class EEGData(NPData):
         data = np.tanh(data)
         return data
 
+class TimeSeries(NPData):
+    '''
+    :param Dx: dimensionality of of data at each time step
+    :param length: sequence length
+    :param batch size: batch size
+    '''
+
+    def __init__(self, Dx, length, batch_size, nepoch=np.inf, tensor=True, seed=0, prefix="", downsample=1):
+        # nsubject x n trials x channel x times_steps
+        all_data = np.load(prefix + "data/eeg/eeg_data.npy", allow_pickle=True)
+        train_data = []
+        test_data = []
+        sep = 0.75
+        np.random.RandomState(seed).shuffle(all_data)
+        for sub_data in all_data:
+            ntrial = int(sep * len(sub_data))
+            train_data += sub_data[:ntrial, :downsample * length:downsample, :Dx],
+            test_data += sub_data[ntrial:, :downsample * length:downsample, :Dx],
+            assert train_data[-1].shape[1] == length
+            assert train_data[-1].shape[2] == Dx
+
+        self.train_data = self.normalize(train_data)
+        self.test_data = self.normalize(test_data)
+        self.all_data = np.concatenate([self.train_data, self.test_data], 0)
+        super().__init__(self.train_data, batch_size, nepoch, tensor)
+
+    def normalize(self, data):
+        data = np.concatenate(data, 0)
+        m, s = data.mean((0, 1)), data.std((0, 1))
+        data = (data - m) / (3 * s)
+        data = np.tanh(data)
+        return data
+
 
 def plot_batch(batch_series, iters, saved_file, axis=None):
     '''
