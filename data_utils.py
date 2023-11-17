@@ -207,39 +207,28 @@ class EEGData(NPData):
         data = np.tanh(data)
         return data
 
-class TimeSeries(NPData):
+class GBM(NPData):
     '''
     :param Dx: dimensionality of of data at each time step
     :param length: sequence length
     :param batch size: batch size
     '''
 
-    def __init__(self, Dx, length, batch_size, nepoch=np.inf, tensor=True, seed=0, prefix="", downsample=1):
+    def __init__(self, mu, sigma, dt, length, batch_size, n_paths, initial_value=1.0, time_dim=False, nepoch=np.inf, tensor=True, seed=0, prefix="", downsample=1):
         # nsubject x n trials x channel x times_steps
-        all_data = np.load(prefix + "data/eeg/eeg_data.npy", allow_pickle=True)
-        train_data = []
-        test_data = []
-        sep = 0.75
-        np.random.RandomState(seed).shuffle(all_data)
-        for sub_data in all_data:
-            ntrial = int(sep * len(sub_data))
-            train_data += sub_data[:ntrial, :downsample * length:downsample, :Dx],
-            test_data += sub_data[ntrial:, :downsample * length:downsample, :Dx],
-            assert train_data[-1].shape[1] == length
-            assert train_data[-1].shape[2] == Dx
-
-        self.train_data = self.normalize(train_data)
-        self.test_data = self.normalize(test_data)
-        self.all_data = np.concatenate([self.train_data, self.test_data], 0)
+        rng = np.random.default_rng(seed)
+        n_steps = length - 1
+        path = np.exp((mu - 0.5 * sigma**2) * dt + sigma * np.sqrt(dt) * rng.standard_normal((n_paths, n_steps)))
+        path = np.cumprod(path, axis=1)
+        path = np.concatenate([np.ones((n_paths, 1)), path], axis=1)
+        path = path[..., np.newaxis] * initial_value
+        if time_dim:
+            t = np.linspace(0, length * dt, length).reshape(1,-1, 1)
+            path = np.concatenate([t, path], axis=-1)
+        self.train_data = path[:int(0.75 * n_paths)]
+        self.test_data = path[int(0.75 * n_paths):]
+        self.all_data = path
         super().__init__(self.train_data, batch_size, nepoch, tensor)
-
-    def normalize(self, data):
-        data = np.concatenate(data, 0)
-        m, s = data.mean((0, 1)), data.std((0, 1))
-        data = (data - m) / (3 * s)
-        data = np.tanh(data)
-        return data
-
 
 def plot_batch(batch_series, iters, saved_file, axis=None):
     '''
