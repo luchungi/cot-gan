@@ -98,6 +98,36 @@ class ToyGenerator(tf.keras.Model):
         x = tf.reshape(tensor=x, shape=[self.batch_size, self.time_steps, self.Dx])
         return x
 
+class GenLSTM(tf.keras.Model):
+    def __init__(self, noise_dim, seq_dim, seq_len, hidden_size=64, n_lstm_layers=1):
+        super().__init__()
+        self.seq_dim = seq_dim
+        self.noise_dim = noise_dim
+        self.seq_len = seq_len
+        self.hidden_size = hidden_size
+        self.n_lstm_layers = n_lstm_layers
+
+        self.rnn = layers.LSTM(input_shape=(seq_dim+noise_dim, seq_len), units=hidden_size, return_sequences=True, return_state=True)
+        self.net = tf.keras.Sequential([
+            layers.Dense(hidden_size, activation='relu'),
+            layers.Dense(hidden_size, activation='relu'),
+            layers.Dense(1)
+        ])
+
+    def call(self, noise, training=True, mask=None):
+        batch_size = tf.shape(noise)[0]
+        x = tf.zeros([batch_size, 1, self.seq_dim])
+        h = tf.zeros([batch_size, self.hidden_size])
+        c = tf.zeros([batch_size, self.hidden_size])
+        seq = [x]
+        for i in range(self.seq_len-1):
+            input = tf.concat([x, noise[:,i:i+1,:]], axis=-1)
+            output, h, c = self.rnn(input, initial_state=[h, c], training=training)
+            x = self.net(output, training=training)
+            seq.append(x)
+        output_seq = tf.concat(seq, axis=1)
+        output_seq = tf.cumsum(output_seq, axis=1)
+        return output_seq
 
 class ToyDiscriminator(tf.keras.Model):
     '''
@@ -179,7 +209,7 @@ class VideoDCG(tf.keras.Model):
 
         if self.bn:
             self.bn2 = tf.keras.layers.BatchNormalization()
-        
+
         model = tf.keras.Sequential()
         model.add(layers.Dense(8*8*self.filter_size*4, use_bias=False))
         if self.bn:
@@ -233,7 +263,7 @@ class VideoDCG(tf.keras.Model):
         # input shape for conv3D: (batch, depth, rows, cols, channels)
         conv_inputs = tf.reshape(lstm_h, [self.batch_size * self.time_steps, -1])
         y = self.deconv(conv_inputs)
-        
+
         y = tf.reshape(y, [self.batch_size, self.time_steps, self.x_height, self.x_width, self.nchannel])
         y = tf.transpose(y, (0, 2, 1, 3, 4))
         y = tf.reshape(tensor=y, shape=[self.batch_size, self.x_height, self.x_width*self.time_steps, self.nchannel])
@@ -287,7 +317,7 @@ class VideoDCD(tf.keras.Model):
             model.add(layers.LeakyReLU())
 
         self.conv = model
-        
+
         self.rnn = tf.keras.Sequential()
         if x_width == 64:
             self.rnn.add(tf.keras.layers.LSTM(self.filter_size*4, return_sequences=True))

@@ -218,10 +218,10 @@ class GBM(NPData):
         # nsubject x n trials x channel x times_steps
         rng = np.random.default_rng(seed)
         n_steps = length - 1
-        path = np.exp((mu - 0.5 * sigma**2) * dt + sigma * np.sqrt(dt) * rng.standard_normal((n_paths, n_steps)))
-        path = np.cumprod(path, axis=1)
-        path = np.concatenate([np.ones((n_paths, 1)), path], axis=1)
-        path = path[..., np.newaxis] * initial_value
+        path = (mu - 0.5 * sigma**2) * dt + sigma * np.sqrt(dt) * rng.standard_normal((n_paths, n_steps)) # no exponentiation for log series
+        path = np.cumsum(path, axis=1)
+        path = np.concatenate([np.zeros((n_paths, 1)), path], axis=1)
+        path = path[..., np.newaxis] + np.log(initial_value)
         if time_dim:
             t = np.linspace(0, length * dt, length).reshape(1,-1, 1)
             path = np.concatenate([t, path], axis=-1)
@@ -236,16 +236,19 @@ def plot_batch(batch_series, iters, saved_file, axis=None):
     :param iters: current iteration
     :return: plots up to six sequences on shared axis
     '''
-    flatui = ["#9b59b6", "#3498db", "#95a5a6", "#e74c3c", "#34495e", "#2ecc71"]
-    batch_size = np.shape(batch_series)[0]
-    num_seq = np.minimum(len(flatui), batch_size)
+    # flatui = ["#9b59b6", "#3498db", "#95a5a6", "#e74c3c", "#34495e", "#2ecc71"]
+    # batch_size = np.shape(batch_series)[0]
+    # num_seq = np.minimum(len(flatui), batch_size)
 
-    for i in range(0, num_seq):
-        data = [_ for _ in enumerate(batch_series[i])]
-        sns.lineplot(x=[el[0] for el in data],
-                     y=[el[1] for el in data],
-                     color=flatui[i % len(flatui)],
-                     ax=axis)
+    # for i in range(0, num_seq):
+    #     data = [_ for _ in enumerate(batch_series[i])]
+    #     sns.lineplot(x=[el[0] for el in data],
+    #                  y=[el[1] for el in data],
+    #                  color=flatui[i % len(flatui)],
+    #                  ax=axis)
+
+    plt.plot(np.exp(batch_series.T))
+
     str = "Sample plot after {} iterations".format(iters)
     plt.title(str)
     plt.savefig("./trained/{}/images/{}.png".format(saved_file, str))
