@@ -12,7 +12,7 @@ import re
 import sys
 import io
 import math
-
+import Quantlib as ql
 
 class DataProcessor:
     def __init__(self, path, seq_len, channels):
@@ -222,6 +222,66 @@ class GBM(NPData):
         path = np.cumsum(path, axis=1)
         path = np.concatenate([np.zeros((n_paths, 1)), path], axis=1)
         path = path[..., np.newaxis] + np.log(initial_value)
+        if time_dim:
+            t = np.linspace(0, length * dt, length).reshape(1,-1, 1)
+            path = np.concatenate([t, path], axis=-1)
+        self.train_data = path[:int(0.75 * n_paths)]
+        self.test_data = path[int(0.75 * n_paths):]
+        self.all_data = path
+        super().__init__(self.train_data, batch_size, nepoch, tensor)
+
+class OU(NPData):
+    def __init__(self, kappa, theta, sigma, dt, length, batch_size, n_paths, initial_value=1.0, time_dim=False, nepoch=np.inf, tensor=True, seed=0, prefix="", downsample=1):
+        # nsubject x n trials x channel x times_steps
+        rng = np.random.default_rng(seed)
+        n_steps = length - 1
+        path = np.ones((n_paths, length)) * initial_value
+        non_path_dependent_part = theta * (1 - np.exp(-kappa * dt)) + sigma / np.sqrt(2 * kappa) * np.sqrt(1 - np.exp(-2 * kappa * dt)) * rng.standard_normal((n_paths, n_steps))
+        for t in range(n_steps):
+            path[:, t+1] = path[:, t] * np.exp(-kappa * dt) + non_path_dependent_part[:, t]
+        path = np.log(path[..., np.newaxis])
+        if time_dim:
+            t = np.linspace(0, length * dt, length).reshape(1,-1, 1)
+            path = np.concatenate([t, path], axis=-1)
+        self.train_data = path[:int(0.75 * n_paths)]
+        self.test_data = path[int(0.75 * n_paths):]
+        self.all_data = path
+        super().__init__(self.train_data, batch_size, nepoch, tensor)
+
+def gen_quantlib_paths(process, dt, n_paths, seq_len, seed, return_all_paths):
+
+    times = ql.TimeGrid((seq_len-1)*dt, seq_len-1) # creates list of times starting from 0 to (seq_len-1)*dt with step size dt
+    dimension = process.factors() # 2 factors for Heston model i.e. spot and vol
+
+    randomGenerator = ql.UniformRandomGenerator() if seed is None else ql.UniformRandomGenerator(seed=seed) # seed of 0 seems to not set a seed
+    rng = ql.UniformRandomSequenceGenerator(dimension * (seq_len-1), randomGenerator)
+    sequenceGenerator = ql.GaussianRandomSequenceGenerator(rng)
+    pathGenerator = ql.GaussianMultiPathGenerator(process, list(times), sequenceGenerator, False)
+
+    paths = [[] for i in range(dimension)]
+    for _ in range(n_paths):
+        samplePath = pathGenerator.next()
+        values = samplePath.value()
+
+        for j in range(dimension):
+            paths[j].append([x for x in values[j]])
+
+    if return_all_paths:
+        return np.array(paths).transpose([1,2,0])
+    else:
+        return np.array(paths[0])[..., np.newaxis]
+class Heston(NPData):
+    def __init__(self, mu, v0, kappa, theta, rho, sigma, dt, length, batch_size, n_paths, initial_value=1.0, return_vols=False, time_dim=False, nepoch=np.inf, tensor=True, seed=0, prefix="", downsample=1):
+        # nsubject x n trials x channel x times_steps
+        rng = np.random.default_rng(seed)
+        today = ql.Date().todaysDate()
+        riskFreeTS = ql.YieldTermStructureHandle(ql.FlatForward(today, mu, ql.Actual365Fixed()))
+        dividendTS = ql.YieldTermStructureHandle(ql.FlatForward(today, 0.00, ql.Actual365Fixed()))
+        initialValue = ql.QuoteHandle(ql.SimpleQuote(initial_value))
+
+        hestonProcess = ql.HestonProcess(riskFreeTS, dividendTS, initialValue, v0, kappa, theta, sigma, rho)
+
+        path = gen_quantlib_paths(hestonProcess, dt, n_paths, length, seed=seed, return_all_paths=return_vols)
         if time_dim:
             t = np.linspace(0, length * dt, length).reshape(1,-1, 1)
             path = np.concatenate([t, path], axis=-1)
