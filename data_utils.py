@@ -12,7 +12,7 @@ import re
 import sys
 import io
 import math
-import Quantlib as ql
+import QuantLib as ql
 
 class DataProcessor:
     def __init__(self, path, seq_len, channels):
