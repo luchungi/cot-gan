@@ -99,13 +99,14 @@ class ToyGenerator(tf.keras.Model):
         return x
 
 class GenLSTM(tf.keras.Model):
-    def __init__(self, noise_dim, seq_dim, seq_len, hidden_size=64, n_lstm_layers=1):
+    def __init__(self, noise_dim, seq_dim, seq_len, hidden_size=64, n_lstm_layers=1, log_series=True):
         super().__init__()
         self.seq_dim = seq_dim
         self.noise_dim = noise_dim
         self.seq_len = seq_len
         self.hidden_size = hidden_size
         self.n_lstm_layers = n_lstm_layers
+        self.log_series = log_series
 
         self.rnn = layers.LSTM(input_shape=(seq_dim+noise_dim, seq_len), units=hidden_size, return_sequences=True, return_state=True)
         self.net = tf.keras.Sequential([
@@ -116,7 +117,10 @@ class GenLSTM(tf.keras.Model):
 
     def call(self, noise, training=True, mask=None):
         batch_size = tf.shape(noise)[0]
-        x = tf.zeros([batch_size, 1, self.seq_dim])
+        if self.log_series:
+            x = tf.zeros([batch_size, 1, self.seq_dim])
+        else:
+            x = tf.ones([batch_size, 1, self.seq_dim])
         h = tf.zeros([batch_size, self.hidden_size])
         c = tf.zeros([batch_size, self.hidden_size])
         seq = [x]
@@ -129,8 +133,8 @@ class GenLSTM(tf.keras.Model):
         output_seq = tf.cumsum(output_seq, axis=1)
         return output_seq
 
-class GenLSTMpdt(tf.keras.Model):
-    def __init__(self, noise_dim, seq_dim, seq_len, dt, hidden_size=64, n_lstm_layers=1, activation='relu'):
+class GenLSTMp(tf.keras.Model):
+    def __init__(self, noise_dim, seq_dim, seq_len, hidden_size=64, n_lstm_layers=1, activation='relu', log_series=True):
         super().__init__()
         self.seq_dim = seq_dim
         self.noise_dim = noise_dim
@@ -138,7 +142,7 @@ class GenLSTMpdt(tf.keras.Model):
         self.hidden_size = hidden_size
         self.n_lstm_layers = n_lstm_layers
         self.activation = activation
-        self.dt = dt
+        self.log_series = log_series
 
         self.rnn = layers.LSTM(input_shape=(seq_dim+noise_dim, seq_len), units=hidden_size, return_sequences=True, return_state=True)
         self.mean_net = tf.keras.Sequential([
@@ -154,7 +158,56 @@ class GenLSTMpdt(tf.keras.Model):
 
     def call(self, noise, training=True, mask=None):
         batch_size = tf.shape(noise)[0]
-        x = tf.zeros([batch_size, 1, self.seq_dim])
+        if self.log_series:
+            x = tf.zeros([batch_size, 1, self.seq_dim])
+        else:
+            x = tf.ones([batch_size, 1, self.seq_dim])
+        h = tf.zeros([batch_size, self.hidden_size])
+        c = tf.zeros([batch_size, self.hidden_size])
+        seq = [x]
+        for i in range(self.seq_len-1):
+            input = tf.concat([x, noise[:,i:i+1,:]], axis=-1)
+            output, h, c = self.rnn(input, initial_state=[h, c], training=training)
+            mu = self.mean_net(output, training=training)
+            logvar = self.var_net(output, training=training)
+            self.std = tf.exp(0.5 * logvar)
+            out_dist = tfp.distributions.Normal(mu, self.std)
+            x = out_dist.sample()
+            seq.append(x)
+        output_seq = tf.concat(seq, axis=1)
+        output_seq = tf.cumsum(output_seq, axis=1)
+        return output_seq
+
+class GenLSTMpdt(tf.keras.Model):
+    def __init__(self, noise_dim, seq_dim, seq_len, dt, hidden_size=64, n_lstm_layers=1, activation='relu', log_series=True):
+        super().__init__()
+        self.seq_dim = seq_dim
+        self.noise_dim = noise_dim
+        self.seq_len = seq_len
+        self.hidden_size = hidden_size
+        self.n_lstm_layers = n_lstm_layers
+        self.activation = activation
+        self.dt = dt
+        self.log_series = log_series
+
+        self.rnn = layers.LSTM(input_shape=(seq_dim+noise_dim, seq_len), units=hidden_size, return_sequences=True, return_state=True)
+        self.mean_net = tf.keras.Sequential([
+            layers.Dense(hidden_size, activation=activation),
+            layers.Dense(hidden_size, activation=activation),
+            layers.Dense(seq_dim)
+        ])
+        self.var_net = tf.keras.Sequential([
+            layers.Dense(hidden_size, activation=activation),
+            layers.Dense(hidden_size, activation=activation),
+            layers.Dense(seq_dim)
+        ])
+
+    def call(self, noise, training=True, mask=None):
+        batch_size = tf.shape(noise)[0]
+        if self.log_series:
+            x = tf.zeros([batch_size, 1, self.seq_dim])
+        else:
+            x = tf.ones([batch_size, 1, self.seq_dim])
         h = tf.zeros([batch_size, self.hidden_size])
         c = tf.zeros([batch_size, self.hidden_size])
         seq = [x]
