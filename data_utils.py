@@ -244,8 +244,8 @@ class GBM(NPData):
         path = np.concatenate([np.zeros((n_paths, 1)), path], axis=1)
         path = path[..., np.newaxis] + np.log(initial_value)
 
-        if log_series:
-            path = np.log(path)
+        if not log_series:
+            path = np.exp(path)
 
         if time_dim:
             t = np.linspace(0, length * dt, length).reshape(1,-1, 1)
