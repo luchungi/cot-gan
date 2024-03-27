@@ -99,7 +99,7 @@ class ToyGenerator(tf.keras.Model):
         return x
 
 class GenLSTM(tf.keras.Model):
-    def __init__(self, noise_dim, seq_dim, seq_len, hidden_size=64, n_lstm_layers=1, log_series=True):
+    def __init__(self, noise_dim, seq_dim, seq_len, hidden_size=64, n_lstm_layers=1, activation='relu', log_series=True):
         super().__init__()
         self.seq_dim = seq_dim
         self.noise_dim = noise_dim
@@ -110,8 +110,8 @@ class GenLSTM(tf.keras.Model):
 
         self.rnn = layers.LSTM(input_shape=(seq_dim+noise_dim, seq_len), units=hidden_size, return_sequences=True, return_state=True)
         self.net = tf.keras.Sequential([
-            layers.Dense(hidden_size, activation='relu'),
-            layers.Dense(hidden_size, activation='relu'),
+            layers.Dense(hidden_size, activation=activation),
+            layers.Dense(hidden_size, activation=activation),
             layers.Dense(seq_dim)
         ])
 
