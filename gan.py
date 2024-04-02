@@ -224,6 +224,65 @@ class GenLSTMpdt(tf.keras.Model):
         output_seq = tf.cumsum(output_seq, axis=1)
         return output_seq
 
+class GenLSTMd(tf.keras.Model):
+    def __init__(self, noise_dim, seq_dim, seq_len, hist_len, hidden_size=64):
+        super().__init__()
+        self.seq_dim = seq_dim
+        self.noise_dim = noise_dim
+        self.seq_len = seq_len
+        self.hist_len = hist_len
+        self.hidden_size = hidden_size
+
+        self.rnn = layers.LSTM(input_shape=(seq_dim+noise_dim, seq_len), units=hidden_size, return_sequences=True, return_state=True)
+        self.output_net = layers.Dense(seq_dim)
+
+    def _condition_lstm(self, noise, hist_x, t):
+        batch_size = noise.shape[0] # noise shape: batch_size, seq_len, noise_dim
+        h = tf.zeros([batch_size, self.hidden_size])
+        c = tf.zeros([batch_size, self.hidden_size])
+        seq = tf.zeros([batch_size, 1, 1])
+
+        dts = t[:, 1:, :] - t[:, :-1, :]
+        if hist_x is not None: # feed in the historical data to get the hidden state
+            diff_x = hist_x[:, 1:, :] - hist_x[:, :-1, :]
+            input = tf.concat([diff_x, noise[:, :self.hist_len-1, :], dts[:, :self.hist_len-1, :]], axis=-1) # hist_len-1 returns for seq of length hist_len
+            output, h, c = self.rnn(input, initial_state=[h, c])
+            noise = noise[:,self.hist_len-1:,:] # set the noise to start from the end of the historical data
+            dts = dts[:,self.hist_len-1:,:] # continue from the last dt
+            # print(seq.shape, diff_x.shape)
+            seq = tf.concat([seq, diff_x], axis=1)
+            # print(seq.shape)
+        else:
+            output = tf.zeros([batch_size, 1, self.hidden_size])
+        return seq, output[:,-1:,:], noise, dts, h, c
+
+    def _generate_sequence(self, seq, output, noise, dts, h, c):
+        gen_seq = []
+        for i in range(self.seq_len-seq.shape[1]): # iterate over the remaining time steps
+            x = self.output_net(output)
+            # print(f'Generated single step output shape: {x.shape}')
+            gen_seq.append(x)
+            if i < noise.shape[1]:
+                input = tf.concat([x, noise[:,i:i+1,:], dts[:,i:i+1,:]], axis=-1) # len=1, batch_size, input_size=X.shape[-1]+noise_dim+1 for dt
+                output, h, c = self.rnn(input, initial_state=[h, c])
+        # print(f'Historical sequence shape: {seq.shape}')
+        # print(seq)
+        output_seq = tf.concat(gen_seq, axis=1)
+        # print(f'Generated sequence shape: {output_seq.shape}')
+        # print(output_seq)
+        output_seq = tf.concat([seq, output_seq], axis=1)
+        return output_seq
+
+    def call(self, noise, x, training=True, mask=None):
+        t = x[:,:,0:1]
+        hist_x = x[:,:self.hist_len,1:]
+        # print(noise.shape, x.shape, t.shape, hist_x.shape)
+        seq, output, noise, dts, h, c = self._condition_lstm(noise, hist_x, t)
+        output_seq = self._generate_sequence(seq, output, noise, dts, h, c)
+        output_seq = tf.cumsum(output_seq, axis=1)
+        output_seq = tf.concat([t, output_seq], axis=2)
+        return output_seq
+
 class ToyDiscriminator(tf.keras.Model):
     '''
     1D CNN Discriminator for H or M
