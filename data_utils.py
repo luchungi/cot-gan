@@ -1,19 +1,18 @@
 #!/usr/bin/env python
 
 # Classes to create the data for training model
+import io
+import json
+from typing import Optional
 import numpy as np
+import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
-import pickle
 import tensorflow as tf
-import os, glob
-import cmath
-import re
-import sys
-import io
-import math
+import arch
+from arch.univariate import Normal, StudentsT, SkewStudent, GeneralizedError
 import QuantLib as ql
-import json
+from gaussianize import Gaussianize
 
 def pretty_json(hp):
     json_hp = json.dumps(hp, indent=2)
@@ -97,6 +96,100 @@ class Gaussian:
     def batch(self, batch_size):
         return np.random.randn(batch_size, 1, self.D)
 
+class GARCH:
+    '''
+    Dataset for dataframes with time series
+    Each sample is of shape (sample_len, seq_dim+1) where the first column is the time dimension if time_dim=True
+    '''
+    def __init__(self, df: pd.DataFrame, start_date: str, end_date: str, sample_len: int,
+                 p: int, o: int, q: int, mean_model: str, vol_model: str, dist: str,
+                 seed: int=None, degaussify: bool=False,
+                 stride: int=1, col_idx: int|list[int]=0):
+
+        df = df.loc[start_date:end_date].copy()
+
+        # Gaussianize data for GARCH model
+        df['log_returns'] = np.log(df.iloc[:, col_idx]).diff()
+        df['dt'] = df.index.to_series().diff().dt.days / 365
+        df['cal_ann_returns'] = df.loc[:, 'log_returns'] / df.loc[:, 'dt']
+        df['norm_cal_ann_returns'] = (df.loc[:, 'cal_ann_returns'] - df.loc[:, 'cal_ann_returns'].mean()) / df.loc[:, 'cal_ann_returns'].std()
+        lambert_transform = Gaussianize()
+        df.dropna(inplace=True)
+        self.rs = np.random.RandomState(seed)
+        self.lambert_transform = lambert_transform.fit(df.loc[:, 'norm_cal_ann_returns'])
+        df['gaussianized'] = self.lambert_transform.transform(df.loc[:, 'norm_cal_ann_returns'])
+        self.df = df[['gaussianized']].copy() # self.df used to set up GARCH model ending at the start of the item
+        garch_model = arch.arch_model(df.loc[:,'gaussianized'], mean=mean_model, vol=vol_model, p=p, o=o, q=q, rescale=True, dist=dist)
+        self.res = garch_model.fit(update_freq=0)
+        print(self.res.summary())
+
+        df.index = pd.to_datetime(df.index)
+        time_series_df = df if col_idx is None else df.iloc[:, col_idx]
+        time_series = time_series_df.values.reshape(len(df), -1)
+        time_series = tf.convert_to_tensor(np.log(time_series), dtype=tf.float32)
+        start_time = tf.zeros((1, 1))
+        t = tf.convert_to_tensor((df.index.to_series().diff()[1:].dt.days / 365).values.cumsum()[:,np.newaxis], dtype=tf.float32)
+        t = tf.concat([start_time, t], axis=0)
+        self.dataset = tf.concat([t, time_series], axis=-1)
+
+        self.sample_len = sample_len
+        self.shape = self.dataset.shape
+        self.stride = stride
+        self.len = int((self.dataset.shape[0] - self.sample_len)/self.stride) + 1 - max(p, o, q) # need lags for GARCH model
+        self.p = p
+        self.o = o
+        self.q = q
+        self.max_lag = max(p, o, q)
+        self.mean_model = mean_model
+        self.vol_model = vol_model
+        self.dist = dist
+
+        self.degaussify = degaussify
+        self.rng = np.random.default_rng(seed)
+
+    def __len__(self):
+        return self.len
+
+    @tf.autograph.experimental.do_not_convert
+    def sample(self, shape):
+        assert len(shape) == 3, 'shape must be (batch_size, sample_len-1, noise_dim)'
+        batch_size, time_steps, noise_dim = shape
+        noise = []
+
+        for _ in range(batch_size):
+            idx = self.rng.integers(0, self.len)
+            start = idx*self.stride + self.max_lag
+            # GARCH model inputs end before the start of the item
+            garch_model = arch.arch_model(self.df.iloc[start-self.max_lag:start, 0],
+                                            mean=self.mean_model, vol=self.vol_model,
+                                            p=self.p, o=self.o, q=self.q, rescale=False)
+            # set distribution of GARCH model with random state passed in the construction for reproducibility
+            # NOTE: each time forecast is called, the random state will change
+            if self.dist == 'gaussian':
+                garch_model.distribution = Normal(seed=self.rs)
+            elif self.dist == 't':
+                garch_model.distribution = StudentsT(seed=self.rs)
+            elif self.dist == 'skewt':
+                garch_model.distribution = SkewStudent(seed=self.rs)
+            elif self.dist == 'ged':
+                garch_model.distribution = GeneralizedError(seed=self.rs)
+            else:
+                raise ValueError('dist must be gaussian, t, skewt or ged')
+            self.garch_model = garch_model
+            # forecast sample_len-1 steps
+            forecasts = garch_model.forecast(params=self.res.params,
+                                                horizon=time_steps,
+                                                method='simulation',
+                                                simulations=noise_dim)
+
+            batch_noise = forecasts.simulations.residuals[0].T
+            if self.degaussify:
+                batch_noise = np.concatenate([self.lambert_transform.inverse_transform(batch_noise[:,i:i+1]) for i in range(noise_dim)], axis=1)
+
+            noise.append(batch_noise)
+        noise = np.stack(noise, axis=0)
+
+        return noise
 
 class SineImage(object):
     '''
@@ -157,7 +250,6 @@ class SineImage(object):
     def batch(self, batch_size):
         return self.sample(batch_size, self.length)[1]
 
-
 class NPData(object):
     def __init__(self, data, batch_size, nepoch=np.inf, tensor=True):
         self.data = data
@@ -194,7 +286,6 @@ class NPData(object):
     def batch(self, batch_size):
         return self.__next__()
 
-
 class EEGData(NPData):
     '''
     :param Dx: dimensionality of of data at each time step
@@ -227,6 +318,42 @@ class EEGData(NPData):
         data = (data - m) / (3 * s)
         data = np.tanh(data)
         return data
+
+class DFDataset(NPData):
+    '''
+    Dataset for dataframes with time series
+    Each sample is of shape (sample_len, seq_dim+1) where the first column is the time dimension if time_dim=True
+    '''
+    def __init__(self, df: pd.DataFrame, start_date: str, end_date: str, sample_len: int, batch_size: int, stride: int=1,
+                 col_idx: Optional[int|list[int]]=None, nepoch=np.inf, tensor=True):
+
+        # assert (not lead_lag) or (time_dim and lead_lag), 'time_dim must be True if lead_lag is True'
+        df = df.loc[start_date:end_date]
+        df.index = pd.to_datetime(df.index)
+        time_series_df = df if col_idx is None else df.iloc[:, col_idx]
+        path = time_series_df.values.reshape(len(df), -1)
+        path = np.log(path)
+        # calculate time dimension as years starting from 0 (365 days per year)
+        # first value of t is 0, subsequent values are the difference in days divided by 365
+        # first value from index.diff() is NaN, so we start from the second value which is the difference between the first and second index
+        t = np.zeros((len(df), 1), dtype=np.float32)
+        t[1:,0] = (df.index.to_series().diff()[1:].dt.days / 365).values.cumsum()
+        path = np.concatenate([t, path], axis=-1)
+        self.sample_len = sample_len
+        self.shape = path.shape
+        self.stride = stride
+        self.len = int((path.shape[0] - self.sample_len)/self.stride) + 1
+        self.seq_dim = len(col_idx) if isinstance(col_idx, list) else 1
+
+        paths = []
+        for i in range(self.len):
+            start = i*self.stride
+            end = start + self.sample_len
+            segment = path[start:end]
+            segment = segment - segment[0:1] # rebase series to start at 0
+            paths.append(segment)
+        self.train_data = np.stack(paths)
+        super().__init__(self.train_data, batch_size, nepoch, tensor)
 
 class GBM(NPData):
     '''
