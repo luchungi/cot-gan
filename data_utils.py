@@ -3,7 +3,7 @@
 # Classes to create the data for training model
 import io
 import json
-from typing import Optional
+from typing import Optional, Union
 import numpy as np
 import pandas as pd
 import seaborn as sns
@@ -104,7 +104,7 @@ class GARCH:
     def __init__(self, df: pd.DataFrame, start_date: str, end_date: str, sample_len: int,
                  p: int, o: int, q: int, mean_model: str, vol_model: str, dist: str,
                  seed: int=None, degaussify: bool=False,
-                 stride: int=1, col_idx: int|list[int]=0):
+                 stride: int=1, col_idx: Union[int,list[int]]=0):
 
         df = df.loc[start_date:end_date].copy()
 
@@ -325,7 +325,7 @@ class DFDataset(NPData):
     Each sample is of shape (sample_len, seq_dim+1) where the first column is the time dimension if time_dim=True
     '''
     def __init__(self, df: pd.DataFrame, start_date: str, end_date: str, sample_len: int, batch_size: int, stride: int=1,
-                 col_idx: Optional[int|list[int]]=None, nepoch=np.inf, tensor=True):
+                 col_idx: Optional[Union[int,list[int]]]=None, nepoch=np.inf, tensor=True):
 
         # assert (not lead_lag) or (time_dim and lead_lag), 'time_dim must be True if lead_lag is True'
         df = df.loc[start_date:end_date]
