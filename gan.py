@@ -227,6 +227,7 @@ class GenLSTMpdt(tf.keras.Model):
 class GenLSTMd(tf.keras.Model):
     def __init__(self, noise_dim, seq_dim, seq_len, hist_len, hidden_size=64):
         super().__init__()
+        assert hist_len != 1, 'Historical length must be 0 or greater than 1'
         self.seq_dim = seq_dim
         self.noise_dim = noise_dim
         self.seq_len = seq_len
@@ -243,17 +244,20 @@ class GenLSTMd(tf.keras.Model):
         seq = tf.zeros([batch_size, 1, 1])
 
         dts = t[:, 1:, :] - t[:, :-1, :]
-        if hist_x is not None: # feed in the historical data to get the hidden state
+        if self.hist_len > 1: # feed in the historical data to get the hidden state
             diff_x = hist_x[:, 1:, :] - hist_x[:, :-1, :]
             input = tf.concat([diff_x, noise[:, :self.hist_len-1, :], dts[:, :self.hist_len-1, :]], axis=-1) # hist_len-1 returns for seq of length hist_len
             output, h, c = self.rnn(input, initial_state=[h, c])
             noise = noise[:,self.hist_len-1:,:] # set the noise to start from the end of the historical data
             dts = dts[:,self.hist_len-1:,:] # continue from the last dt
-            # print(seq.shape, diff_x.shape)
             seq = tf.concat([seq, diff_x], axis=1)
-            # print(seq.shape)
         else:
-            output = tf.zeros([batch_size, 1, self.hidden_size])
+            diff_x = tf.zeros([batch_size, 1, self.seq_dim])
+            input = tf.concat([diff_x, noise[:, :1, :], dts[:, :1, :]], axis=-1)
+            output, h, c = self.rnn(input, initial_state=[h, c])
+            noise = noise[:,1:,:]
+            dts = dts[:,1:,:]
+        # print(seq.shape)
         return seq, output[:,-1:,:], noise, dts, h, c
 
     def _generate_sequence(self, seq, output, noise, dts, h, c):
@@ -275,9 +279,10 @@ class GenLSTMd(tf.keras.Model):
 
     def call(self, noise, x, training=True, mask=None):
         t = x[:,:,0:1]
-        hist_x = x[:,:self.hist_len,1:]
-        # print(noise.shape, x.shape, t.shape, hist_x.shape)
+        hist_x = x[:,:self.hist_len,1:] if self.hist_len > 1 else None
+        # print(f'call x:{x.shape} / noise:{noise.shape} / t:{t.shape} / hist_x:{hist_x.shape if hist_x is not None else []}')
         seq, output, noise, dts, h, c = self._condition_lstm(noise, hist_x, t)
+        # print(f'call noise:{noise.shape} / dts:{dts.shape}')
         output_seq = self._generate_sequence(seq, output, noise, dts, h, c)
         output_seq = tf.cumsum(output_seq, axis=1)
         output_seq = tf.concat([t, output_seq], axis=2)
