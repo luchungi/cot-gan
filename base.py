@@ -403,11 +403,11 @@ class GARCH_path_generator():
         path_wohist = torch.cat(list_path_wohist, axis=0).clone().cpu()
         log_returns = torch.cat(list_log_returns, axis=0).clone().cpu()
 
-        print(f'path_whist shape: {path_whist.shape}')
-        print(f'path_wohist shape: {path_wohist.shape}')
-        print(f'log_returns shape: {log_returns.shape}')
-        print(f'timeline_whist shape: {timeline_whist.shape}')
-        print(f'timeline_wohist shape: {timeline_wohist.shape}')
+        # print(f'path_whist shape: {path_whist.shape}')
+        # print(f'path_wohist shape: {path_wohist.shape}')
+        # print(f'log_returns shape: {log_returns.shape}')
+        # print(f'timeline_whist shape: {timeline_whist.shape}')
+        # print(f'timeline_wohist shape: {timeline_wohist.shape}')
 
         return path_whist, path_wohist, log_returns, timeline_whist, timeline_wohist
 
