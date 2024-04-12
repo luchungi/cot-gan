@@ -4,7 +4,6 @@ import tensorflow.keras.layers as layers
 import tensorflow_probability as tfp
 tf.keras.backend.set_floatx('float32')
 
-
 class SimpleGenerator(tf.keras.Model):
     '''
     Generator for creating fake time series data (y_1, y_2,...,y_T) from the latent variable Z.
@@ -44,7 +43,6 @@ class SimpleGenerator(tf.keras.Model):
         y = self.output_layer(y)
         y = tf.reshape(tensor=y, shape=[self.batch_size, self.seq_len//self.dx, self.dx])
         return y
-
 
 class ToyGenerator(tf.keras.Model):
     '''
@@ -354,6 +352,71 @@ class GenLSTMd_v2(tf.keras.Model):
         output_seq = tf.concat([t, output_seq], axis=2)
         return output_seq
 
+class LSTMusic(tf.keras.Model):
+    '''
+    LSTM model that generates a sequence of delta pitch values
+    The output of the LSTM is passed through a linear layer followed by a tanh activation to ensure that the delta pitch values are within the range [-1, 1]
+    This value is then multiplied by the dpitch_range (input) to get the actual delta pitch value
+    The gap and pitch duration are given as input from the reference sample
+    Previous solution tried to generate these values by taking the exponential of the output of the LSTM
+    However, the gap ended getting too large towards the end of the sequence
+    '''
+
+    def __init__(self, noise_dim:int, seq_dim: int, seq_len: int,
+                 dpitch_range: int=24, scale: float=1.0,
+                 hidden_size:int =64, n_lstm_layers: int=1, activation: str='Tanh'):
+        super().__init__()
+        self.gen_type = 'LSTMusic'
+        self.seq_dim = seq_dim # dimension of the time series
+        self.noise_dim = noise_dim # dimension of the noise vector -> vector of (noise_dim, 1) concatenated with the seq value of dimension seq_dim at each time step
+        self.seq_len = seq_len # length of the time series
+        self.dpitch_range = dpitch_range
+        self.scale = scale
+        self.hidden_size = hidden_size
+        self.n_lstm_layers = n_lstm_layers
+
+        self.rnn = layers.LSTM(input_shape=(seq_dim+noise_dim, seq_len), units=hidden_size, return_sequences=True, return_state=True, unroll=True)
+        self.output_net = layers.Dense(1, activation='tanh')
+
+    def _condition_lstm(self, noise, hist_x):
+        batch_size = noise.shape[0] # noise shape: batch_size, seq_len, noise_dim
+        h = tf.zeros([batch_size, self.hidden_size])
+        c = tf.zeros([batch_size, self.hidden_size])
+        dist = tf.cumsum(hist_x[:,:,-1:], axis=1) # distance from the initial note
+        # print(hist_x[0,:,-1], dist[0,:,-1])
+
+        if hist_x is not None: # feed in the historical data to get the hidden state
+            input = tf.concat([hist_x, dist, noise[:, :hist_x.shape[1], :]], axis=-1)
+            output, h, c = self.rnn(input, initial_state=[h, c])
+            noise = noise[:,hist_x.shape[1]:,:] # set the noise to start from the end of the historical data
+        else:
+            output = tf.zeros(batch_size, 1, self.hidden_size, requires_grad=False, device=noise.device)
+        return output[:,-1:,:], noise, h, c, dist[:,-1:,:]
+
+    def _generate_sequence(self, output, noise, h, c, gap_duration, dist):
+        gen_seq = []
+        for i in range(noise.shape[1]+1): # +1 for the first note which is using the output passed in
+            z = self.output_net(output)
+            # gap_duration = torch.exp(z[:,:,:2]) # ensure that the duration and pause duration are positive
+            deltapitch = z * self.dpitch_range * self.scale
+            x = tf.concat([gap_duration[:,i:i+1,:], deltapitch], axis=-1)
+            gen_seq.append(x)
+            dist = dist + deltapitch
+            if i < noise.shape[1]:
+                input = tf.concat([x, dist, noise[:,i:i+1,:]], axis=-1) # len=1, batch_size, input_size=X.shape[-1]+noise_dim+1 for dt
+                output, h, c = self.rnn(input, initial_state=[h, c])
+        output_seq = tf.concat(gen_seq, axis=1)
+        output_seq = tf.cumsum(output_seq, axis=1)
+        return output_seq
+
+    def call(self, noise, hist_x=None, gap_duration=None, training=True, mask=None):
+        output, noise, h, c, dist = self._condition_lstm(noise, hist_x)
+        output_seq = self._generate_sequence(output, noise, h, c, gap_duration, dist)
+        if hist_x is None:
+            return output_seq
+        else:
+            return tf.concat([hist_x, output_seq], axis=1)
+
 class ToyDiscriminator(tf.keras.Model):
     '''
     1D CNN Discriminator for H or M
@@ -395,7 +458,6 @@ class ToyDiscriminator(tf.keras.Model):
         x = tf.reshape(tensor=inputs, shape=[self.batch_size, self.time_steps, self.Dx])
         z = self.fc(x)
         return z
-
 
 class VideoDCG(tf.keras.Model):
     '''
@@ -496,7 +558,6 @@ class VideoDCG(tf.keras.Model):
 
     def call(self, *args, **kwargs):
         return self.call_all(*args, **kwargs)[-1]
-
 
 class VideoDCD(tf.keras.Model):
     '''
