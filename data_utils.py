@@ -319,6 +319,82 @@ class EEGData(NPData):
         data = np.tanh(data)
         return data
 
+def gap_duration_deltapitch_transform(dfs: list[pd.DataFrame]):
+    '''
+    Transform df to have 3 cols: gap to next note, duration of note and change in pitch from previous note
+    First delta pitch is defaulted to 0 so that the first note is determined by the user
+    In other words, the user sets the first note which also determines the key of the song
+    Gap between notes is assumed to be rest
+    The gap represents the time between the end of the previous note and the start of the current note
+    First gap is defaulted to 0 so that the first note is played immediately
+    This format is used for increment based models
+    '''
+    new_dfs = []
+    for i, df in enumerate(dfs):
+        # assert df.columns.tolist()[:3] == ['Start', 'End', 'Pitch'], f'Columns do not match for index {i}'
+        df = df.copy()
+
+        # check if there are overlapping notes
+        gaps = df.loc[df.index[1:], 'Start'].values - df.loc[df.index[:-1], 'End'].values
+        if gaps.min() < 0:
+            print(f'Overlapping notes found in index {i} with min gap {gaps.min()}')
+            continue
+
+        # calculate gaps
+        df.loc[df.index[0], 'Gap'] = 0.
+        df.loc[df.index[1:], 'Gap'] = gaps
+
+        # calculate duration of notes
+        df.loc[:, 'Duration'] = df.loc[:, 'End'] - df.loc[:, 'Start']
+
+        # calculate change in pitch
+        df['DeltaPitch'] = df['Pitch'].diff()
+        df.loc[df.index[0], 'DeltaPitch'] = 0.
+
+        new_dfs.append(df[['Gap', 'Duration', 'DeltaPitch']])
+
+    return new_dfs
+
+class GapDurationDeltaPitchDataset(NPData):
+    '''
+    Dataset for dataframes with 3 columns (Gap, Duration, DeltaPitch) in this order
+    Output consists of a tensor for the 3 columns, a tuple for the artist and song name and the type of data (verse, chorus, etc.)
+    If cluster is provided, then an additional output for the cluster is included
+    Each sample is of the same length that is determined by sample_len
+    Gap is the time between the end of the previous note and the start of the current note
+    First gap is defaulted to 0 so that the first note is played immediately
+    Duration is the time the note is played for
+    DeltaPitch is the change in pitch from the previous note
+    First delta pitch is defaulted to 0 so that the first note is determined by the user
+    In other words, the user sets the first note which also determines the key of the song
+    When sampling from the middle of a song, the initial DeltaPitch and Gap are not gaurenteed to be 0 (To Do: fix this or use stride > max_length of songs)
+    '''
+    def __init__(self, dfs: list[pd.DataFrame], sample_len: int, batch_size: int, scale: float=1., stride: int=1, clusters: Optional[list]=None):
+
+        assert dfs[0].columns.tolist() == ['Gap', 'Duration', 'DeltaPitch'], 'Columns must be in order: Gap, Duration, DeltaPitch'
+
+        self.clusters = clusters
+        self.seq_dim = 3
+        self.scale = scale
+        self.stride = stride
+        self.sample_len = sample_len
+        self.tensors = []
+        self.lens = []
+        for df in dfs:
+            if len(df) >= sample_len:
+                tensor = df.to_numpy()
+                tensor[:,-1] = tensor[:,-1] * scale # scale pitch values accordingly
+                self.tensors.append(tensor)
+                # self.lens.append(int((tensor.shape[0] - self.sample_len)/self.stride) + 1)
+        # self.lens = np.cumsum(self.lens)
+        # self.len = self.lens[-1]
+
+        self.train_data = []
+        for i in range(len(self.tensors)):
+            self.train_data.append(self.tensors[i][:self.sample_len])
+        self.train_data = np.stack(self.train_data)
+        super().__init__(self.train_data, batch_size, np.inf, False)
+
 class DFDataset(NPData):
     '''
     Dataset for dataframes with time series
