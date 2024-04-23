@@ -411,6 +411,52 @@ class GARCH_path_generator():
 
         return path_whist, path_wohist, log_returns, timeline_whist, timeline_wohist
 
+    def generate_noise(self, start_date: str, end_date: str, trading_calendar: str, hist_len: int,
+                        batch_size: int, n_batches: int=1,
+                        device: str='cpu', dtype: torch.dtype=torch.float32):
+        # set up timeline
+        if pd.to_datetime(end_date) > self.df_gen.index[-1]:
+            calendar = mcal.get_calendar(trading_calendar)
+            schedule = calendar.schedule(start_date=start_date, end_date=end_date)
+            t = np.zeros(len(schedule))
+            t[1:] = (schedule.index.to_series().diff()[1:].dt.days / 365).values.cumsum()
+        else:
+            t = self.df_gen[start_date:end_date]['t'].values
+        t = t - t[0]
+
+        # adjust generator sequence length parameter if necessary
+        self.sample_len = len(t)
+
+        # create GARCH model with data up to start_date but model parameters will be from self.garch_params trained during init
+        garch_model = arch.arch_model(self.df_gen.loc[:start_date, 'gaussianized'],
+                                                mean=self.mean_model, vol=self.vol_model,
+                                                p=self.p, o=self.o, q=self.q, rescale=False)
+
+        # set distribution of GARCH model with random state passed in the construction for reproducibility
+        if self.dist == 'gaussian':
+            garch_model.distribution = Normal(seed=self.rs)
+        elif self.dist == 't':
+            garch_model.distribution = StudentsT(seed=self.rs)
+        elif self.dist == 'skewt':
+            garch_model.distribution = SkewStudent(seed=self.rs)
+        elif self.dist == 'ged':
+            garch_model.distribution = GeneralizedError(seed=self.rs)
+        else:
+            raise ValueError('dist must be gaussian, t, skewt or ged')
+
+        noises = []
+        for _ in range(n_batches):
+            forecasts = garch_model.forecast(params=self.garch_params, # use GARCH model parameters trained during init
+                                            horizon=self.sample_len-1, # forecast sample_len-1 steps
+                                            method='simulation',
+                                            simulations=self.noise_dim*batch_size)
+            noise = forecasts.simulations.residuals[0].T
+            noise = noise.reshape(noise.shape[0], self.noise_dim, batch_size).transpose(2, 0, 1) # shape (batch_size, sample_len-1, noise_dim)
+            noise = torch.tensor(noise, dtype=dtype, device=device, requires_grad=False)
+            noises.append(noise)
+        noises = torch.cat(noises, axis=0).clone().cpu()
+        return noises, start_date, end_date
+
 def signature_transform(window: np.ndarray, time: np.ndarray, n_levels: int, lead_lag:Optional[list[int]]=None, scale: bool=True) -> np.ndarray:
     assert time.ndim == 1, 'Time must be 1D'
     if window.ndim == 1: window = window.reshape(-1, 1)
